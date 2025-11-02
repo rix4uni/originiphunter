@@ -1,0 +1,25 @@
+# OriginHunter Configuration File
+# Copy this file to ~/.config/originhunter/config.yaml and add your API keys
+# Optional: Add multiple keys for load balancing
+
+securitytrails:
+  - "YOUR_SECURITYTRAILS_API_KEY_1"
+  - "YOUR_SECURITYTRAILS_API_KEY_2"
+
+shodan:
+  - "YOUR_SHODAN_API_KEY_1"
+  - "YOUR_SHODAN_API_KEY_2"
+
+viewdns:
+  - "YOUR_VIEWDNS_API_KEY_1"
+  - "YOUR_VIEWDNS_API_KEY_2"
+
+hunter:
+  - "YOUR_HUNTER_API_KEY_1"
+  - "YOUR_HUNTER_API_KEY_2"
+
+censys:
+  - "YOUR_CENSYS_API_KEY_1"
+
+fofa:
+  - "YOUR_FOFA_API_KEY_1"
