@@ -40,8 +40,8 @@ type DomainScanResult struct {
 	Title         string
 }
 
-// OriginHunter represents the main hunting instance
-type OriginHunter struct {
+// OriginIpHunter represents the main hunting instance
+type OriginIpHunter struct {
 	config       *Config
 	engines      []string
 	configPath   string
@@ -53,7 +53,7 @@ type OriginHunter struct {
 func main() {
 	var (
 		engines    = pflag.StringSlice("engine", []string{}, "Specific search engines to use (comma-separated). Available: shodan,securitytrails,viewdns,hunter,censys,fofa")
-		configPath = pflag.String("config", "", "Custom config file path (default: ~/.config/originhunter/config.yaml)")
+		configPath = pflag.String("config", "", "Custom config file path (default: ~/.config/originiphunter/config.yaml)")
 		silent     = pflag.Bool("silent", false, "Silent mode.")
 		version    = pflag.Bool("version", false, "Print the version of the tool and exit.")
 		verbose    = pflag.Bool("verbose", false, "Show detailed information about the scanning process")
@@ -77,7 +77,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to get home directory: %v", err)
 		}
-		*configPath = filepath.Join(homeDir, ".config", "originhunter", "config.yaml")
+		*configPath = filepath.Join(homeDir, ".config", "originiphunter", "config.yaml")
 	}
 
 	// Load configuration
@@ -86,8 +86,8 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Create OriginHunter instance
-	hunter := &OriginHunter{
+	// Create OriginIpHunter instance
+	hunter := &OriginIpHunter{
 		config:     cfg,
 		engines:    *engines,
 		configPath: *configPath,
@@ -177,7 +177,7 @@ func createDefaultConfig(configPath string) (*Config, error) {
 }
 
 // HuntOrigin is the main hunting function
-func (h *OriginHunter) HuntOrigin(domain string) error {
+func (h *OriginIpHunter) HuntOrigin(domain string) error {
 	var allIPs []string
 
 	// Extract favicon hashes for different services
@@ -237,7 +237,7 @@ func (h *OriginHunter) HuntOrigin(domain string) error {
 }
 
 // getEnginesToUse determines which engines to use based on configuration
-func (h *OriginHunter) getEnginesToUse() []string {
+func (h *OriginIpHunter) getEnginesToUse() []string {
 	if len(h.engines) > 0 {
 		return h.engines
 	}
@@ -267,7 +267,7 @@ func (h *OriginHunter) getEnginesToUse() []string {
 }
 
 // extractShodanFaviconHash extracts favicon hash for Shodan (occurrence 2)
-func (h *OriginHunter) extractShodanFaviconHash(domain string) (string, error) {
+func (h *OriginIpHunter) extractShodanFaviconHash(domain string) (string, error) {
 	// Use bash command: echo "domain" | favinfo --silent | awk '{print $2}' | tr -d '[]'
 	cmd := exec.Command("bash", "-c", fmt.Sprintf("echo \"%s\" | favinfo --silent | awk '{print $2}' | tr -d '[]'", domain))
 	output, err := cmd.Output()
@@ -302,7 +302,7 @@ func (h *OriginHunter) extractShodanFaviconHash(domain string) (string, error) {
 }
 
 // extractHunterFaviconHash extracts favicon hash for Hunter (occurrence 3)
-func (h *OriginHunter) extractHunterFaviconHash(domain string) (string, error) {
+func (h *OriginIpHunter) extractHunterFaviconHash(domain string) (string, error) {
 	// Use bash command: echo "domain" | favinfo --silent | awk '{print $3}' | tr -d '[]'
 	cmd := exec.Command("bash", "-c", fmt.Sprintf("echo \"%s\" | favinfo --silent | awk '{print $3}' | tr -d '[]'", domain))
 	output, err := cmd.Output()
@@ -337,7 +337,7 @@ func (h *OriginHunter) extractHunterFaviconHash(domain string) (string, error) {
 }
 
 // extractPageTitle extracts page title using Go HTTP client
-func (h *OriginHunter) extractPageTitle(domain string) (string, error) {
+func (h *OriginIpHunter) extractPageTitle(domain string) (string, error) {
 	// Try both https and http (prefer https first)
 	protocols := []string{"https", "http"}
 	for _, protocol := range protocols {
@@ -354,7 +354,7 @@ func (h *OriginHunter) extractPageTitle(domain string) (string, error) {
 }
 
 // scanDomainWithHttpx scans the input domain to show current status
-func (h *OriginHunter) scanDomainWithHttpx(domain string) {
+func (h *OriginIpHunter) scanDomainWithHttpx(domain string) {
 	// Try both https and http (prefer https first)
 	protocols := []string{"https", "http"}
 	for _, protocol := range protocols {
@@ -372,7 +372,7 @@ func (h *OriginHunter) scanDomainWithHttpx(domain string) {
 }
 
 // runEngine runs a specific search engine
-func (h *OriginHunter) runEngine(engine, domain, shodanFaviconHash, hunterFaviconHash, pageTitle string) ([]string, error) {
+func (h *OriginIpHunter) runEngine(engine, domain, shodanFaviconHash, hunterFaviconHash, pageTitle string) ([]string, error) {
 	switch engine {
 	case "securitytrails":
 		return h.querySecurityTrails(domain)
@@ -392,7 +392,7 @@ func (h *OriginHunter) runEngine(engine, domain, shodanFaviconHash, hunterFavico
 }
 
 // querySecurityTrails queries SecurityTrails API
-func (h *OriginHunter) querySecurityTrails(domain string) ([]string, error) {
+func (h *OriginIpHunter) querySecurityTrails(domain string) ([]string, error) {
 	if len(h.config.SecurityTrails) == 0 {
 		return nil, fmt.Errorf("no SecurityTrails API keys configured")
 	}
@@ -433,7 +433,7 @@ func (h *OriginHunter) querySecurityTrails(domain string) ([]string, error) {
 }
 
 // queryShodan queries Shodan API
-func (h *OriginHunter) queryShodan(domain, faviconHash, pageTitle string) ([]string, error) {
+func (h *OriginIpHunter) queryShodan(domain, faviconHash, pageTitle string) ([]string, error) {
 	if len(h.config.Shodan) == 0 {
 		return nil, fmt.Errorf("no Shodan API keys configured")
 	}
@@ -520,7 +520,7 @@ func (h *OriginHunter) queryShodan(domain, faviconHash, pageTitle string) ([]str
 }
 
 // queryViewDNS queries ViewDNS API
-func (h *OriginHunter) queryViewDNS(domain string) ([]string, error) {
+func (h *OriginIpHunter) queryViewDNS(domain string) ([]string, error) {
 	if len(h.config.ViewDNS) == 0 {
 		return nil, fmt.Errorf("no ViewDNS API keys configured")
 	}
@@ -554,7 +554,7 @@ func (h *OriginHunter) queryViewDNS(domain string) ([]string, error) {
 }
 
 // queryHunter queries Hunter API
-func (h *OriginHunter) queryHunter(domain, faviconHash, pageTitle string) ([]string, error) {
+func (h *OriginIpHunter) queryHunter(domain, faviconHash, pageTitle string) ([]string, error) {
 	if len(h.config.Hunter) == 0 {
 		return nil, fmt.Errorf("no Hunter API keys configured")
 	}
@@ -660,19 +660,19 @@ func (h *OriginHunter) queryHunter(domain, faviconHash, pageTitle string) ([]str
 }
 
 // queryCensys queries Censys API (placeholder)
-func (h *OriginHunter) queryCensys(domain string) ([]string, error) {
+func (h *OriginIpHunter) queryCensys(domain string) ([]string, error) {
 	// Censys implementation would go here
 	return nil, fmt.Errorf("Censys not implemented yet")
 }
 
 // queryFofa queries FOFA API (placeholder)
-func (h *OriginHunter) queryFofa(domain string) ([]string, error) {
+func (h *OriginIpHunter) queryFofa(domain string) ([]string, error) {
 	// FOFA implementation would go here
 	return nil, fmt.Errorf("FOFA not implemented yet")
 }
 
 // getRandomAPIKey selects a random API key from the list
-func (h *OriginHunter) getRandomAPIKey(keys []string) string {
+func (h *OriginIpHunter) getRandomAPIKey(keys []string) string {
 	if len(keys) == 0 {
 		return ""
 	}
@@ -685,7 +685,7 @@ func (h *OriginHunter) getRandomAPIKey(keys []string) string {
 }
 
 // extractIPsFromJSON extracts IPs from generic JSON response
-func (h *OriginHunter) extractIPsFromJSON(jsonStr string) []string {
+func (h *OriginIpHunter) extractIPsFromJSON(jsonStr string) []string {
 	var ips []string
 	lines := strings.Split(jsonStr, "\n")
 	for _, line := range lines {
@@ -702,7 +702,7 @@ func (h *OriginHunter) extractIPsFromJSON(jsonStr string) []string {
 }
 
 // extractIPsFromShodanJSON extracts IPs from Shodan JSON response
-func (h *OriginHunter) extractIPsFromShodanJSON(jsonStr string) []string {
+func (h *OriginIpHunter) extractIPsFromShodanJSON(jsonStr string) []string {
 	var ips []string
 	lines := strings.Split(jsonStr, "\n")
 	for _, line := range lines {
@@ -719,7 +719,7 @@ func (h *OriginHunter) extractIPsFromShodanJSON(jsonStr string) []string {
 }
 
 // extractIPsFromHunterJSON extracts IPs from Hunter JSON response
-func (h *OriginHunter) extractIPsFromHunterJSON(jsonStr string) []string {
+func (h *OriginIpHunter) extractIPsFromHunterJSON(jsonStr string) []string {
 	var ips []string
 	lines := strings.Split(jsonStr, "\n")
 	for _, line := range lines {
@@ -736,7 +736,7 @@ func (h *OriginHunter) extractIPsFromHunterJSON(jsonStr string) []string {
 }
 
 // isValidIP performs basic IPv4 validation
-func (h *OriginHunter) isValidIP(ip string) bool {
+func (h *OriginIpHunter) isValidIP(ip string) bool {
 	parts := strings.Split(ip, ".")
 	if len(parts) != 4 {
 		return false
@@ -758,7 +758,7 @@ func (h *OriginHunter) isValidIP(ip string) bool {
 }
 
 // validateIPs validates IPs using Go HTTP client
-func (h *OriginHunter) validateIPs(ips []string) error {
+func (h *OriginIpHunter) validateIPs(ips []string) error {
 	// Remove duplicates
 	uniqueIPs := h.removeDuplicates(ips)
 
@@ -819,7 +819,7 @@ func (h *OriginHunter) validateIPs(ips []string) error {
 }
 
 // isOriginMatch checks if a result matches the origin based on content length and title
-func (h *OriginHunter) isOriginMatch(result, origin *DomainScanResult) bool {
+func (h *OriginIpHunter) isOriginMatch(result, origin *DomainScanResult) bool {
 	// Match if title is the same (content length may vary slightly)
 	if result.Title != "" && result.Title == origin.Title {
 		return true
@@ -828,7 +828,7 @@ func (h *OriginHunter) isOriginMatch(result, origin *DomainScanResult) bool {
 }
 
 // scanSingleDomain scans a single domain and returns results
-func (h *OriginHunter) scanSingleDomain(url string) (*DomainScanResult, error) {
+func (h *OriginIpHunter) scanSingleDomain(url string) (*DomainScanResult, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -873,7 +873,7 @@ func (h *OriginHunter) scanSingleDomain(url string) (*DomainScanResult, error) {
 }
 
 // getStatusCodeColor returns ANSI color code based on HTTP status code
-func (h *OriginHunter) getStatusCodeColor(statusCode int) string {
+func (h *OriginIpHunter) getStatusCodeColor(statusCode int) string {
 	switch {
 	case statusCode >= 200 && statusCode < 300:
 		return "\033[32m" // Green for 2xx
@@ -889,13 +889,13 @@ func (h *OriginHunter) getStatusCodeColor(statusCode int) string {
 }
 
 // getProtocolColor returns ANSI color code based on protocol
-func (h *OriginHunter) getProtocolColor(protocol string) string {
+func (h *OriginIpHunter) getProtocolColor(protocol string) string {
 	// httpx uses cyan for both http and https
 	return "\033[36m" // Cyan for both protocols
 }
 
 // printColoredResult prints a scan result with colors
-func (h *OriginHunter) printColoredResult(result *DomainScanResult) {
+func (h *OriginIpHunter) printColoredResult(result *DomainScanResult) {
 	// Print URL without color
 	fmt.Printf("%s", result.URL)
 
@@ -915,7 +915,7 @@ func (h *OriginHunter) printColoredResult(result *DomainScanResult) {
 }
 
 // extractTitleFromHTML extracts the page title from HTML content
-func (h *OriginHunter) extractTitleFromHTML(html string) string {
+func (h *OriginIpHunter) extractTitleFromHTML(html string) string {
 	// Match <title> tag content
 	titleRegex := regexp.MustCompile(`(?i)<title[^>]*>([^<]+)</title>`)
 	matches := titleRegex.FindStringSubmatch(html)
@@ -927,7 +927,7 @@ func (h *OriginHunter) extractTitleFromHTML(html string) string {
 }
 
 // removeDuplicates removes duplicate strings from a slice
-func (h *OriginHunter) removeDuplicates(ips []string) []string {
+func (h *OriginIpHunter) removeDuplicates(ips []string) []string {
 	keys := make(map[string]bool)
 	var result []string
 
