@@ -267,4 +267,7 @@ echo "example.com" | originiphunter --content-length
 
 # Show only IPs matching status code (title matching still required)
 echo "example.com" | originiphunter --status-code
+
+# Recommended
+cat subs.subs | httpx -duc -silent -mc 200 -cdn -server -td | grep -iE "Akamai|Cloudflare" | awk '{print $1}' | originiphunter --silent --content-length --json | jq -r '.origin_ips[]?.URL // empty'
 ```
