@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rix4uni/originiphunter/banner"
@@ -40,24 +42,49 @@ type DomainScanResult struct {
 	Title         string
 }
 
+// JSONOutput represents the JSON output structure
+type JSONOutput struct {
+	Domain       string              `json:"domain"`
+	OriginDomain *DomainScanResult   `json:"origin_domain,omitempty"`
+	OriginIPs    []*DomainScanResult `json:"origin_ips"`
+	OtherIPs     []*DomainScanResult `json:"other_ips"`
+}
+
+// FavInfoOutput represents the favinfo JSON output structure
+type FavInfoOutput struct {
+	MurmurHash int64  `json:"murmur_hash"`
+	MD5Hash    string `json:"md5_hash"`
+	SHA256Hash string `json:"sha256_hash"`
+}
+
 // OriginIpHunter represents the main hunting instance
 type OriginIpHunter struct {
-	config       *Config
-	engines      []string
-	configPath   string
-	originResult *DomainScanResult // Store the original domain scan result
-	verbose      bool              // Show verbose output
-	userAgent    string            // HTTP User-Agent header
+	config             *Config
+	engines            []string
+	configPath         string
+	originResult       *DomainScanResult // Store the original domain scan result
+	verbose            bool              // Show verbose output
+	userAgent          string            // HTTP User-Agent header
+	matchContentLength bool              // Match content length in Origin IPs Found
+	matchStatusCode    bool              // Match status code in Origin IPs Found
+	jsonOutput         bool              // Enable JSON output format
+	parallel           bool              // Enable parallel engine execution
+	concurrent         int               // Number of concurrent IP validations
 }
 
 func main() {
 	var (
-		engines    = pflag.StringSlice("engine", []string{}, "Specific search engines to use (comma-separated). Available: shodan,securitytrails,viewdns,hunter,censys,fofa")
-		configPath = pflag.String("config", "", "Custom config file path (default: ~/.config/originiphunter/config.yaml)")
-		silent     = pflag.Bool("silent", false, "Silent mode.")
-		version    = pflag.Bool("version", false, "Print the version of the tool and exit.")
-		verbose    = pflag.Bool("verbose", false, "Show detailed information about the scanning process")
-		userAgent  = pflag.StringP("useragent", "H", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36", "HTTP User-Agent header")
+		engines            = pflag.StringSlice("engine", []string{}, "Specific search engines to use (comma-separated). Available: shodan,securitytrails,viewdns,hunter,censys,fofa")
+		configPath         = pflag.String("config", "", "Custom config file path (default: ~/.config/originiphunter/config.yaml)")
+		silent             = pflag.Bool("silent", false, "Silent mode.")
+		version            = pflag.Bool("version", false, "Print the version of the tool and exit.")
+		verbose            = pflag.Bool("verbose", false, "Show detailed information about the scanning process")
+		userAgent          = pflag.StringP("useragent", "H", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36", "HTTP User-Agent header")
+		contentLengthMatch = pflag.BoolP("content-length", "C", false, "Match content length in Origin IPs Found section")
+		statusCodeMatch    = pflag.BoolP("status-code", "S", false, "Match status code in Origin IPs Found section")
+		jsonOutput         = pflag.Bool("json", false, "Output results in JSON format")
+		parallel           = pflag.BoolP("parallel", "p", false, "Run search engines in parallel for faster execution")
+		concurrent         = pflag.Int("concurrent", 50, "Number of concurrent IP validations (default: 50)")
 	)
 	pflag.Parse()
 
@@ -88,11 +115,16 @@ func main() {
 
 	// Create OriginIpHunter instance
 	hunter := &OriginIpHunter{
-		config:     cfg,
-		engines:    *engines,
-		configPath: *configPath,
-		verbose:    *verbose,
-		userAgent:  *userAgent,
+		config:             cfg,
+		engines:            *engines,
+		configPath:         *configPath,
+		verbose:            *verbose,
+		userAgent:          *userAgent,
+		matchContentLength: *contentLengthMatch,
+		matchStatusCode:    *statusCodeMatch,
+		jsonOutput:         *jsonOutput,
+		parallel:           *parallel,
+		concurrent:         *concurrent,
 	}
 
 	// Process input
@@ -103,7 +135,13 @@ func main() {
 			continue
 		}
 
-		fmt.Printf("Processing: %s\n", domain)
+		// Remove http:// or https:// prefix if present
+		domain = strings.TrimPrefix(domain, "https://")
+		domain = strings.TrimPrefix(domain, "http://")
+
+		if !hunter.jsonOutput {
+			fmt.Printf("Processing: %s\n", domain)
+		}
 
 		// Run httpx on the input domain to show current status
 		hunter.scanDomainWithHttpx(domain)
@@ -213,15 +251,39 @@ func (h *OriginIpHunter) HuntOrigin(domain string) error {
 	enginesToUse := h.getEnginesToUse()
 
 	// Run each engine
-	for _, engine := range enginesToUse {
-		ips, err := h.runEngine(engine, domain, shodanFaviconHash, hunterFaviconHash, pageTitle)
-		if err != nil {
-			if h.verbose {
-				fmt.Printf("\033[31mError with %s:\033[0m %v\n", engine, err)
-			}
-			continue
+	if h.parallel {
+		// Parallel execution using goroutines
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		for _, engine := range enginesToUse {
+			wg.Add(1)
+			go func(eng string) {
+				defer wg.Done()
+				ips, err := h.runEngine(eng, domain, shodanFaviconHash, hunterFaviconHash, pageTitle)
+				if err != nil {
+					if h.verbose {
+						fmt.Printf("\033[31mError with %s:\033[0m %v\n", eng, err)
+					}
+					return
+				}
+				mu.Lock()
+				allIPs = append(allIPs, ips...)
+				mu.Unlock()
+			}(engine)
 		}
-		allIPs = append(allIPs, ips...)
+		wg.Wait()
+	} else {
+		// Sequential execution
+		for _, engine := range enginesToUse {
+			ips, err := h.runEngine(engine, domain, shodanFaviconHash, hunterFaviconHash, pageTitle)
+			if err != nil {
+				if h.verbose {
+					fmt.Printf("\033[31mError with %s:\033[0m %v\n", engine, err)
+				}
+				continue
+			}
+			allIPs = append(allIPs, ips...)
+		}
 	}
 
 	// Remove duplicates and validate IPs
@@ -230,7 +292,7 @@ func (h *OriginIpHunter) HuntOrigin(domain string) error {
 		if h.verbose {
 			fmt.Printf("\n\033[92mTotal unique IPs:\033[0m %d\n", len(uniqueIPs))
 		}
-		return h.validateIPs(allIPs)
+		return h.validateIPs(domain, allIPs)
 	}
 
 	return nil
@@ -266,74 +328,60 @@ func (h *OriginIpHunter) getEnginesToUse() []string {
 	return availableEngines
 }
 
-// extractShodanFaviconHash extracts favicon hash for Shodan (occurrence 2)
+// extractShodanFaviconHash extracts favicon hash for Shodan using JSON output
 func (h *OriginIpHunter) extractShodanFaviconHash(domain string) (string, error) {
-	// Use bash command: echo "domain" | favinfo --silent | awk '{print $2}' | tr -d '[]'
-	cmd := exec.Command("bash", "-c", fmt.Sprintf("echo \"%s\" | favinfo --silent | awk '{print $2}' | tr -d '[]'", domain))
+	// Use favinfo with --silent --json flags
+	cmd := exec.Command("bash", "-c", fmt.Sprintf("echo \"%s\" | favinfo --silent --json", domain))
 	output, err := cmd.Output()
 	if err != nil {
 		// Try alternative approach with direct favinfo
-		cmd = exec.Command("favinfo", "--silent", domain)
+		cmd = exec.Command("favinfo", "--silent", "--json", domain)
 		output, err = cmd.Output()
 		if err != nil {
 			return "", fmt.Errorf("favinfo command failed: %w", err)
 		}
-
-		// Parse output manually - look for occurrence 2
-		lines := strings.Split(string(output), "\n")
-		for _, line := range lines {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				hash := strings.Trim(fields[1], "[]")
-				if hash != "" {
-					return hash, nil
-				}
-			}
-		}
-		return "", fmt.Errorf("no Shodan favicon hash found in output")
 	}
 
-	hash := strings.TrimSpace(string(output))
-	if hash == "" {
-		return "", fmt.Errorf("no Shodan favicon hash found")
+	// Parse JSON output
+	var favInfo FavInfoOutput
+	if err := json.Unmarshal(output, &favInfo); err != nil {
+		return "", fmt.Errorf("failed to parse favinfo JSON: %w", err)
 	}
 
-	return hash, nil
+	// Extract murmur_hash and convert to string
+	if favInfo.MurmurHash == 0 {
+		return "", fmt.Errorf("no Shodan favicon hash (murmur_hash) found in output")
+	}
+
+	return fmt.Sprintf("%d", favInfo.MurmurHash), nil
 }
 
-// extractHunterFaviconHash extracts favicon hash for Hunter (occurrence 3)
+// extractHunterFaviconHash extracts favicon hash for Hunter using JSON output
 func (h *OriginIpHunter) extractHunterFaviconHash(domain string) (string, error) {
-	// Use bash command: echo "domain" | favinfo --silent | awk '{print $3}' | tr -d '[]'
-	cmd := exec.Command("bash", "-c", fmt.Sprintf("echo \"%s\" | favinfo --silent | awk '{print $3}' | tr -d '[]'", domain))
+	// Use favinfo with --silent --json flags
+	cmd := exec.Command("bash", "-c", fmt.Sprintf("echo \"%s\" | favinfo --silent --json", domain))
 	output, err := cmd.Output()
 	if err != nil {
 		// Try alternative approach with direct favinfo
-		cmd = exec.Command("favinfo", "--silent", domain)
+		cmd = exec.Command("favinfo", "--silent", "--json", domain)
 		output, err = cmd.Output()
 		if err != nil {
 			return "", fmt.Errorf("favinfo command failed: %w", err)
 		}
-
-		// Parse output manually - look for occurrence 3
-		lines := strings.Split(string(output), "\n")
-		for _, line := range lines {
-			fields := strings.Fields(line)
-			if len(fields) >= 3 {
-				hash := strings.Trim(fields[2], "[]")
-				if hash != "" {
-					return hash, nil
-				}
-			}
-		}
-		return "", fmt.Errorf("no Hunter favicon hash found in output")
 	}
 
-	hash := strings.TrimSpace(string(output))
-	if hash == "" {
-		return "", fmt.Errorf("no Hunter favicon hash found")
+	// Parse JSON output
+	var favInfo FavInfoOutput
+	if err := json.Unmarshal(output, &favInfo); err != nil {
+		return "", fmt.Errorf("failed to parse favinfo JSON: %w", err)
 	}
 
-	return hash, nil
+	// Extract md5_hash (Hunter.how uses MD5 format, not MurmurHash)
+	if favInfo.MD5Hash == "" {
+		return "", fmt.Errorf("no Hunter favicon hash (md5_hash) found in output")
+	}
+
+	return favInfo.MD5Hash, nil
 }
 
 // extractPageTitle extracts page title using Go HTTP client
@@ -365,8 +413,10 @@ func (h *OriginIpHunter) scanDomainWithHttpx(domain string) {
 		}
 		// Store the origin result for later comparison
 		h.originResult = result
-		// Print the scan result in httpx-like format with colors
-		h.printColoredResult(result)
+		// Print the scan result in httpx-like format with colors (unless JSON mode)
+		if !h.jsonOutput {
+			h.printColoredResult(result)
+		}
 		break // Exit after first successful scan
 	}
 }
@@ -758,59 +808,114 @@ func (h *OriginIpHunter) isValidIP(ip string) bool {
 }
 
 // validateIPs validates IPs using Go HTTP client
-func (h *OriginIpHunter) validateIPs(ips []string) error {
+func (h *OriginIpHunter) validateIPs(domain string, ips []string) error {
 	// Remove duplicates
 	uniqueIPs := h.removeDuplicates(ips)
 
 	var originIPs, otherIPs []*DomainScanResult
+	var mu sync.Mutex
 
-	// Scan each IP
-	for _, ip := range uniqueIPs {
-		// Try both https and http (prefer https first)
-		protocols := []string{"https", "http"}
-		scanned := false
-		for _, protocol := range protocols {
-			url := fmt.Sprintf("%s://%s", protocol, ip)
-			result, err := h.scanSingleDomain(url)
-			if err != nil {
-				continue // Try next protocol
-			}
+	// Use worker pool pattern for concurrent validation
+	jobs := make(chan string, len(uniqueIPs))
+	var wg sync.WaitGroup
 
-			// Check if this matches the origin
-			if h.originResult != nil && h.isOriginMatch(result, h.originResult) {
-				originIPs = append(originIPs, result)
-			} else {
-				otherIPs = append(otherIPs, result)
+	// Semaphore channel to limit concurrency
+	semaphore := make(chan struct{}, h.concurrent)
+
+	// Start workers
+	for i := 0; i < h.concurrent; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ip := range jobs {
+				// Acquire semaphore
+				semaphore <- struct{}{}
+
+				// Try both https and http (prefer https first)
+				protocols := []string{"https", "http"}
+				scanned := false
+				var result *DomainScanResult
+				for _, protocol := range protocols {
+					url := fmt.Sprintf("%s://%s", protocol, ip)
+					scanResult, err := h.scanSingleDomain(url)
+					if err != nil {
+						continue // Try next protocol
+					}
+					result = scanResult
+					scanned = true
+					break // Exit after first successful scan
+				}
+
+				// Process result
+				if scanned {
+					// Check if this matches the origin
+					if h.originResult != nil && h.isOriginMatch(result, h.originResult) {
+						mu.Lock()
+						originIPs = append(originIPs, result)
+						mu.Unlock()
+					} else {
+						mu.Lock()
+						otherIPs = append(otherIPs, result)
+						mu.Unlock()
+					}
+				} else {
+					// If both protocols failed, add to other IPs with error info
+					failedResult := &DomainScanResult{
+						URL:        fmt.Sprintf("http://%s", ip),
+						StatusCode: 0,
+					}
+					mu.Lock()
+					otherIPs = append(otherIPs, failedResult)
+					mu.Unlock()
+				}
+
+				// Release semaphore
+				<-semaphore
 			}
-			scanned = true
-			break // Exit after first successful scan
-		}
-		if !scanned {
-			// If both protocols failed, add to other IPs with error info
-			failedResult := &DomainScanResult{
-				URL:        fmt.Sprintf("http://%s", ip),
-				StatusCode: 0,
-			}
-			otherIPs = append(otherIPs, failedResult)
-		}
+		}()
 	}
+
+	// Send jobs
+	for _, ip := range uniqueIPs {
+		jobs <- ip
+	}
+	close(jobs)
+
+	// Wait for all workers to complete
+	wg.Wait()
 
 	// Print results
-	if len(originIPs) > 0 {
-		fmt.Println("\033[92m\nOrigin IPs Found:\033[0m")
-		for _, result := range originIPs {
-			h.printColoredResult(result)
+	if h.jsonOutput {
+		// JSON output format
+		jsonOutput := JSONOutput{
+			Domain:       domain,
+			OriginDomain: h.originResult,
+			OriginIPs:    originIPs,
+			OtherIPs:     otherIPs,
 		}
-	}
-
-	if len(otherIPs) > 0 {
-		fmt.Println("\033[91m\nOther IPs:\033[0m")
-		for _, result := range otherIPs {
-			if result.StatusCode == 0 {
-				// Print failed results in red
-				fmt.Printf("\033[31m%s [Failed]\033[0m\n", result.URL)
-			} else {
+		jsonData, err := json.MarshalIndent(jsonOutput, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+		fmt.Println(string(jsonData))
+	} else {
+		// Colored text output format
+		if len(originIPs) > 0 {
+			fmt.Println("\033[92m\nOrigin IPs Found:\033[0m")
+			for _, result := range originIPs {
 				h.printColoredResult(result)
+			}
+		}
+
+		if len(otherIPs) > 0 {
+			fmt.Println("\033[91m\nOther IPs:\033[0m")
+			for _, result := range otherIPs {
+				if result.StatusCode == 0 {
+					// Print failed results in red
+					fmt.Printf("\033[31m%s [Failed]\033[0m\n", result.URL)
+				} else {
+					h.printColoredResult(result)
+				}
 			}
 		}
 	}
@@ -820,11 +925,26 @@ func (h *OriginIpHunter) validateIPs(ips []string) error {
 
 // isOriginMatch checks if a result matches the origin based on content length and title
 func (h *OriginIpHunter) isOriginMatch(result, origin *DomainScanResult) bool {
-	// Match if title is the same (content length may vary slightly)
-	if result.Title != "" && result.Title == origin.Title {
-		return true
+	// Base requirement: title must match
+	if result.Title == "" || result.Title != origin.Title {
+		return false
 	}
-	return false
+
+	// If content length matching is enabled, check for exact match
+	if h.matchContentLength {
+		if result.ContentLength != origin.ContentLength {
+			return false
+		}
+	}
+
+	// If status code matching is enabled, check for exact match
+	if h.matchStatusCode {
+		if result.StatusCode != origin.StatusCode {
+			return false
+		}
+	}
+
+	return true
 }
 
 // scanSingleDomain scans a single domain and returns results
